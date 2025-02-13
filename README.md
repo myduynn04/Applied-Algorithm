@@ -11,10 +11,9 @@ The repository is structured into different categories based on algorithmic para
 ### 🔹 1. Backtracking  
 - Solves combinatorial problems using recursion and state-space exploration.  
 - **Examples:**  
-  - N-Queens Problem  
-  - Sudoku Solver  
-  - Subset Sum  
-  - Hamiltonian Cycle  
+  - BalanceAssignment
+  - Bus Router  
+ 
 
 ### 🔹 2. Graph Algorithms  
 - Covers fundamental graph traversal and shortest path algorithms.  
