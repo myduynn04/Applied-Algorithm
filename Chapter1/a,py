@@ -1,0 +1,203 @@
+import multiprocessing
+import time
+import os
+from datetime import datetime
+from tabulate import tabulate
+import sys
+import random
+from typing import Dict  # Keep this import
+
+NUM_THREADS = 8
+NUM_BARRIERS = 5  # Giảm số vòng để dễ theo dõi
+WORK_TIME = 0.3   # Thời gian xử lý công việc (giây)
+BARRIER_TIME = 0.2  # Thời gian chờ tại barrier (giây)
+DISPLAY_REFRESH = 0.1  # Tần suất cập nhật màn hình
+
+def clear_terminal():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+def create_progress_bar(progress, width=30):  # Tăng độ dài thanh tiến độ
+    filled = int(width * progress)
+    bar = '█' * filled + '▒' * (width - filled)
+    percentage = progress * 100
+    if percentage == 100:
+        return f'[{bar}] \033[1;32m{percentage:.1f}%\033[0m'  # Xanh lá khi hoàn thành
+    else:
+        return f'[{bar}] {percentage:.1f}%'
+
+def print_status_table(thread_status, current_barrier, status_lock):
+    with status_lock:
+        headers = ['Thread', 'Trạng thái', 'Tiến độ', 'Thời gian (s)']
+        table_data = []
+        
+        for thread_id in sorted(thread_status.keys()):
+            status = thread_status[thread_id]
+            progress = create_progress_bar(status['progress'])
+            state = status['state']
+            
+            # Thêm hiệu ứng nhấp nháy cho trạng thái đang chờ
+            if state == 'waiting':
+                if int(time.time() * 2) % 2:  # Nhấp nháy mỗi 0.5 giây
+                    state = '\033[1;33m⌛ Đợi barrier\033[0m'
+                else:
+                    state = '\033[1;33m⏳ Đợi barrier\033[0m'
+            elif state == 'working':
+                state = '\033[1;32m⚙ Đang xử lý\033[0m'
+            elif state == 'completed':
+                state = '\033[1;34m✓ Hoàn thành\033[0m'
+            
+            time_spent = f"{status['time']:.2f}" if status['time'] is not None else "---"
+            table_data.append([
+                f"\033[1;36mThread {thread_id}\033[0m", 
+                state, 
+                progress, 
+                time_spent
+            ])
+        
+        clear_terminal()
+        print(f"\n\033[1;35m=== Mô phỏng Barrier Synchronization ===\033[0m")
+        print(f"\033[1;33mVòng: {current_barrier + 1}/{NUM_BARRIERS}\033[0m")
+        print(tabulate(table_data, headers=headers, tablefmt="grid"))
+       
+       
+        sys.stdout.flush()
+
+def update_thread_status(thread_status, thread_id, status_lock, **kwargs):
+    with status_lock:
+        current_status = thread_status[thread_id].copy()
+        current_status.update(kwargs)
+        thread_status[thread_id] = current_status
+
+def simulate_work(progress, thread_status, thread_id, status_lock, barrier_num):
+    start = time.time()
+    update_thread_status(thread_status, thread_id, status_lock,
+                        progress=progress,
+                        time=time.time() - start)
+    print_status_table(thread_status, barrier_num, status_lock)
+    time.sleep(WORK_TIME + random.uniform(0, 0.1))  # Thêm chút độ trễ ngẫu nhiên
+
+
+def centralized_barrier(thread_id, barrier_num, count, sense, local_sense, thread_status, status_lock):
+    start_time = time.time()
+    local_sense.value = not local_sense.value
+    
+    update_thread_status(thread_status, thread_id, status_lock, 
+                        state='waiting', 
+                        time=time.time() - start_time)
+    print_status_table(thread_status, barrier_num, status_lock)
+    
+    with count.get_lock():
+        count.value -= 1
+        if count.value == 0:
+            time.sleep(BARRIER_TIME)  # Tạm dừng khi tất cả đã đến barrier
+            count.value = NUM_THREADS
+            sense.value = local_sense.value
+        else:
+            while sense.value != local_sense.value:
+                time.sleep(DISPLAY_REFRESH)
+                update_thread_status(thread_status, thread_id, status_lock,
+                                   time=time.time() - start_time)
+                print_status_table(thread_status, barrier_num, status_lock)
+
+def worker(thread_id, count, sense, local_sense, thread_status, status_lock):
+    for barrier_num in range(NUM_BARRIERS):
+        # Khởi tạo công việc mới
+        update_thread_status(thread_status, thread_id, status_lock,
+                           state='working',
+                           progress=0,
+                           time=0)
+        print_status_table(thread_status, barrier_num, status_lock)
+        
+        # Mô phỏng công việc với 10 bước
+        for progress in range(10):
+            simulate_work((progress + 1) / 10, thread_status, thread_id, status_lock, barrier_num)
+        
+        # Barrier synchronization
+        centralized_barrier(thread_id, barrier_num, count, sense, local_sense, thread_status, status_lock)
+        
+        # Đánh dấu hoàn thành
+        update_thread_status(thread_status, thread_id, status_lock,
+                           state='completed')
+        print_status_table(thread_status, barrier_num, status_lock)
+        time.sleep(1)  # Tạm dừng để quan sát trạng thái hoàn thành
+
+def print_results_summary(thread_status: Dict, total_time: float):
+    """Print a summary of the barrier synchronization simulation results."""
+    print("\n\033[1;35m=== Kết quả Mô phỏng ===\033[0m")
+    
+    # Collect thread-wise statistics
+    thread_times = [status['time'] for status in thread_status.values() if status['time'] is not None]
+    
+    # Calculate summary statistics
+    avg_thread_time = sum(thread_times) / len(thread_times) if thread_times else 0
+    max_thread_time = max(thread_times) if thread_times else 0
+    min_thread_time = min(thread_times) if thread_times else 0
+    
+    # Prepare summary table
+    summary_data = [
+        ["Tổng số luồng", NUM_THREADS],
+        ["Số vòng barrier", NUM_BARRIERS],
+        ["Tổng thời gian thực thi", f"{total_time:.2f} giây"],
+        ["Thời gian trung bình/luồng", f"{avg_thread_time:.2f} giây"],
+        ["Thời gian max/luồng", f"{max_thread_time:.2f} giây"],
+        ["Thời gian min/luồng", f"{min_thread_time:.2f} giây"]
+    ]
+    
+    # Print summary table
+    print(tabulate(summary_data, headers=["Mục", "Giá trị"], tablefmt="grid"))
+    
+    # Visual representation of thread performance
+    print("\n\033[1;33m=== Biểu đồ Hiệu năng Luồng ===\033[0m")
+    max_bar_width = 30
+    for thread_id, status in sorted(thread_status.items()):
+        if status['time'] is not None:
+            bar_length = int((status['time'] / max_thread_time) * max_bar_width)
+            bar = '█' * bar_length + '▒' * (max_bar_width - bar_length)
+            print(f"Luồng {thread_id}: [{bar}] {status['time']:.2f}s")
+
+def main():
+    # Khởi tạo shared variables
+    manager = multiprocessing.Manager()
+    thread_status = manager.dict()
+    status_lock = multiprocessing.Lock()
+    
+    for i in range(NUM_THREADS):
+        thread_status[i] = {
+            'state': 'working',
+            'progress': 0,
+            'time': None
+        }
+    
+    count = multiprocessing.Value('i', NUM_THREADS)
+    sense = multiprocessing.Value('b', True)
+    
+    clear_terminal()
+    print("\033[1;35m=== Bắt đầu mô phỏng Barrier Synchronization ===\033[0m")
+    start_total_time = time.time()
+    time.sleep(1)
+    
+    # Tạo các tiến trình
+    processes = []
+    for i in range(NUM_THREADS):
+        local_sense = multiprocessing.Value('b', True)
+        p = multiprocessing.Process(
+            target=worker,
+            args=(i, count, sense, local_sense, thread_status, status_lock)
+        )
+        processes.append(p)
+        p.start()
+        time.sleep(0.1)  # Khởi động các thread tuần tự
+    
+    # Đợi tất cả các tiến trình kết thúc
+    for p in processes:
+        p.join()
+    
+    total_time = time.time() - start_total_time
+    
+    print("\n\033[1;35m=== Mô phỏng hoàn thành ===\033[0m")
+    
+    # In kết quả tổng kết
+    print_results_summary(thread_status, total_time)
+
+if __name__ == "__main__":
+    main()
